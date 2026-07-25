@@ -1,0 +1,558 @@
+--[[
+    ===========================================================
+    ConversorPT_LocalScript.lua
+    -----------------------------------------------------------
+    LocalScript FE (client-side) que exibe um botão flutuante
+    arrastável. Ao abrir o menu, o jogador escreve uma frase em
+    português do Brasil, clica em "Converter e Enviar" e o script:
+
+        1. Envia o texto para uma IA externa (via HttpService/
+           executor) pedindo a conversão para português europeu.
+        2. Mostra o texto convertido na própria interface.
+        3. Envia automaticamente a mensagem convertida no chat
+           do Roblox.
+
+    Requer o módulo "Config" (Config.lua) na mesma pasta, com
+    API_URL, API_KEY e MODEL preenchidos.
+
+    Compatível com execução via executor (FE). Como LocalScripts
+    "normais" do Roblox não conseguem fazer requisições HTTP para
+    domínios externos, o script tenta várias funções de requisição
+    fornecidas por executores (syn.request, http_request, request)
+    antes de cair no HttpService padrão como último recurso.
+    ===========================================================
+]]
+
+-- ===========================================================
+-- SERVIÇOS
+-- ===========================================================
+local Players            = game:GetService("Players")
+local UserInputService   = game:GetService("UserInputService")
+local TweenService       = game:GetService("TweenService")
+local HttpService        = game:GetService("HttpService")
+local TextChatService    = game:GetService("TextChatService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui    = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ===========================================================
+-- CONFIGURAÇÃO DA API DE IA
+-- -----------------------------------------------------------
+-- Preencha os 3 campos abaixo com os dados do seu provedor.
+-- Formato esperado: "Chat Completions" estilo OpenAI, ou seja:
+--     POST {API_URL}
+--     Headers: Authorization: Bearer {API_KEY}
+--     Body: { model = MODEL, messages = { ... } }
+--
+-- Compatível diretamente com: OpenAI, Grok/x.ai, Groq, ou
+-- qualquer proxy/gateway que imite a API da OpenAI.
+--
+-- Gemini (Google) e a API nativa da Anthropic (Claude) usam
+-- formatos de requisição diferentes — se for usar uma delas
+-- sem um proxy compatível com OpenAI, ajuste a função
+-- converterTexto() mais abaixo (montagem do corpo e leitura
+-- da resposta).
+-- ===========================================================
+local Config = {
+    -- URL completa do endpoint de chat da IA
+    -- Exemplo OpenAI: "https://api.openai.com/v1/chat/completions"
+    API_URL = https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent "",
+
+    -- Sua chave de API (mantenha em segredo)
+    API_KEY = AQ.Ab8RN6IT4awScx1oamv3x8ms-vPCQEoEFDbnhNq0kcTY2G8rcQ "",
+
+    -- Nome do modelo a ser usado
+    -- Exemplo: "gpt-4o-mini", "grok-2-latest", "llama-3.1-70b-versatile"
+    MODEL = gemini-2.5-flash "",
+}
+
+-- ===========================================================
+-- CONSTANTES DE VISUAL (PRETO E DOURADO)
+-- ===========================================================
+local COR_FUNDO       = Color3.fromRGB(15, 15, 15)
+local COR_FUNDO_2     = Color3.fromRGB(25, 25, 25)
+local COR_DOURADO     = Color3.fromRGB(212, 175, 55)
+local COR_DOURADO_ESC = Color3.fromRGB(150, 120, 30)
+local COR_TEXTO       = Color3.fromRGB(240, 240, 240)
+local COR_ERRO        = Color3.fromRGB(220, 70, 70)
+local COR_SUCESSO     = Color3.fromRGB(120, 200, 120)
+
+local COOLDOWN_SEGUNDOS = 3
+local ultimoEnvio = 0
+
+-- ===========================================================
+-- CRIAÇÃO DA INTERFACE
+-- ===========================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ConversorPTBR_GUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = PlayerGui
+
+-- ---------------------------------------------------------
+-- Botão flutuante (abre/fecha o menu) - arrastável
+-- ---------------------------------------------------------
+local botaoFlutuante = Instance.new("TextButton")
+botaoFlutuante.Name = "BotaoFlutuante"
+botaoFlutuante.Size = UDim2.new(0, 56, 0, 56)
+botaoFlutuante.Position = UDim2.new(1, -76, 0.5, -28)
+botaoFlutuante.AnchorPoint = Vector2.new(0, 0)
+botaoFlutuante.BackgroundColor3 = COR_FUNDO
+botaoFlutuante.Text = "PT"
+botaoFlutuante.TextColor3 = COR_DOURADO
+botaoFlutuante.Font = Enum.Font.GothamBold
+botaoFlutuante.TextSize = 18
+botaoFlutuante.AutoButtonColor = false
+botaoFlutuante.ZIndex = 10
+botaoFlutuante.Parent = screenGui
+
+local corBtnFlutuante = Instance.new("UICorner")
+corBtnFlutuante.CornerRadius = UDim.new(1, 0) -- círculo
+corBtnFlutuante.Parent = botaoFlutuante
+
+local strokeBtnFlutuante = Instance.new("UIStroke")
+strokeBtnFlutuante.Color = COR_DOURADO
+strokeBtnFlutuante.Thickness = 2
+strokeBtnFlutuante.Parent = botaoFlutuante
+
+-- ---------------------------------------------------------
+-- Frame principal (menu) - preto e dourado
+-- ---------------------------------------------------------
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 320, 0, 260)
+mainFrame.Position = UDim2.new(0.5, -160, 0.5, -130)
+mainFrame.BackgroundColor3 = COR_FUNDO
+mainFrame.BorderSizePixel = 0
+mainFrame.Visible = false
+mainFrame.ZIndex = 20
+mainFrame.Parent = screenGui
+
+local corMainFrame = Instance.new("UICorner")
+corMainFrame.CornerRadius = UDim.new(0, 14)
+corMainFrame.Parent = mainFrame
+
+local strokeMainFrame = Instance.new("UIStroke")
+strokeMainFrame.Color = COR_DOURADO
+strokeMainFrame.Thickness = 2
+strokeMainFrame.Parent = mainFrame
+
+-- Barra de título (usada para arrastar o menu)
+local barraTitulo = Instance.new("Frame")
+barraTitulo.Name = "BarraTitulo"
+barraTitulo.Size = UDim2.new(1, 0, 0, 40)
+barraTitulo.BackgroundColor3 = COR_FUNDO_2
+barraTitulo.BorderSizePixel = 0
+barraTitulo.ZIndex = 21
+barraTitulo.Parent = mainFrame
+
+local corBarraTitulo = Instance.new("UICorner")
+corBarraTitulo.CornerRadius = UDim.new(0, 14)
+corBarraTitulo.Parent = barraTitulo
+
+-- Corrige o arredondamento apenas no topo da barra
+local fixCantoBarra = Instance.new("Frame")
+fixCantoBarra.Size = UDim2.new(1, 0, 0, 14)
+fixCantoBarra.Position = UDim2.new(0, 0, 1, -14)
+fixCantoBarra.BackgroundColor3 = COR_FUNDO_2
+fixCantoBarra.BorderSizePixel = 0
+fixCantoBarra.ZIndex = 21
+fixCantoBarra.Parent = barraTitulo
+
+local tituloLabel = Instance.new("TextLabel")
+tituloLabel.Size = UDim2.new(1, -40, 1, 0)
+tituloLabel.Position = UDim2.new(0, 12, 0, 0)
+tituloLabel.BackgroundTransparency = 1
+tituloLabel.Text = "Conversor PT-BR → PT-PT"
+tituloLabel.TextColor3 = COR_DOURADO
+tituloLabel.Font = Enum.Font.GothamBold
+tituloLabel.TextSize = 15
+tituloLabel.TextXAlignment = Enum.TextXAlignment.Left
+tituloLabel.ZIndex = 22
+tituloLabel.Parent = barraTitulo
+
+local botaoFechar = Instance.new("TextButton")
+botaoFechar.Size = UDim2.new(0, 30, 0, 30)
+botaoFechar.Position = UDim2.new(1, -36, 0, 5)
+botaoFechar.BackgroundColor3 = COR_FUNDO
+botaoFechar.Text = "X"
+botaoFechar.TextColor3 = COR_DOURADO
+botaoFechar.Font = Enum.Font.GothamBold
+botaoFechar.TextSize = 14
+botaoFechar.AutoButtonColor = false
+botaoFechar.ZIndex = 22
+botaoFechar.Parent = barraTitulo
+
+local corBotaoFechar = Instance.new("UICorner")
+corBotaoFechar.CornerRadius = UDim.new(0, 8)
+corBotaoFechar.Parent = botaoFechar
+
+-- TextBox de entrada (frase em português do Brasil)
+local textBoxEntrada = Instance.new("TextBox")
+textBoxEntrada.Name = "TextBoxEntrada"
+textBoxEntrada.Size = UDim2.new(1, -24, 0, 70)
+textBoxEntrada.Position = UDim2.new(0, 12, 0, 52)
+textBoxEntrada.BackgroundColor3 = COR_FUNDO_2
+textBoxEntrada.TextColor3 = COR_TEXTO
+textBoxEntrada.PlaceholderText = "Escreva sua frase em português do Brasil..."
+textBoxEntrada.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+textBoxEntrada.Font = Enum.Font.Gotham
+textBoxEntrada.TextSize = 14
+textBoxEntrada.TextWrapped = true
+textBoxEntrada.TextXAlignment = Enum.TextXAlignment.Left
+textBoxEntrada.TextYAlignment = Enum.TextYAlignment.Top
+textBoxEntrada.ClearTextOnFocus = false
+textBoxEntrada.MultiLine = true
+textBoxEntrada.ZIndex = 21
+textBoxEntrada.Parent = mainFrame
+
+local corTextBox = Instance.new("UICorner")
+corTextBox.CornerRadius = UDim.new(0, 10)
+corTextBox.Parent = textBoxEntrada
+
+local strokeTextBox = Instance.new("UIStroke")
+strokeTextBox.Color = COR_DOURADO_ESC
+strokeTextBox.Thickness = 1
+strokeTextBox.Parent = textBoxEntrada
+
+local paddingTextBox = Instance.new("UIPadding")
+paddingTextBox.PaddingLeft = UDim.new(0, 8)
+paddingTextBox.PaddingRight = UDim.new(0, 8)
+paddingTextBox.PaddingTop = UDim.new(0, 6)
+paddingTextBox.Parent = textBoxEntrada
+
+-- Botão "Converter e Enviar"
+local botaoConverter = Instance.new("TextButton")
+botaoConverter.Name = "BotaoConverter"
+botaoConverter.Size = UDim2.new(1, -24, 0, 40)
+botaoConverter.Position = UDim2.new(0, 12, 0, 132)
+botaoConverter.BackgroundColor3 = COR_DOURADO
+botaoConverter.Text = "Converter e Enviar"
+botaoConverter.TextColor3 = COR_FUNDO
+botaoConverter.Font = Enum.Font.GothamBold
+botaoConverter.TextSize = 15
+botaoConverter.AutoButtonColor = false
+botaoConverter.ZIndex = 21
+botaoConverter.Parent = mainFrame
+
+local corBotaoConverter = Instance.new("UICorner")
+corBotaoConverter.CornerRadius = UDim.new(0, 10)
+corBotaoConverter.Parent = botaoConverter
+
+-- Label de status (cooldown, erros, sucesso)
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Name = "StatusLabel"
+statusLabel.Size = UDim2.new(1, -24, 0, 18)
+statusLabel.Position = UDim2.new(0, 12, 0, 178)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = ""
+statusLabel.TextColor3 = COR_TEXTO
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextSize = 12
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.ZIndex = 21
+statusLabel.Parent = mainFrame
+
+-- Label com o texto convertido (resultado)
+local resultadoLabel = Instance.new("TextLabel")
+resultadoLabel.Name = "ResultadoLabel"
+resultadoLabel.Size = UDim2.new(1, -24, 0, 50)
+resultadoLabel.Position = UDim2.new(0, 12, 0, 198)
+resultadoLabel.BackgroundColor3 = COR_FUNDO_2
+resultadoLabel.Text = ""
+resultadoLabel.TextColor3 = COR_SUCESSO
+resultadoLabel.Font = Enum.Font.Gotham
+resultadoLabel.TextSize = 12
+resultadoLabel.TextWrapped = true
+resultadoLabel.TextXAlignment = Enum.TextXAlignment.Left
+resultadoLabel.TextYAlignment = Enum.TextYAlignment.Top
+resultadoLabel.ZIndex = 21
+resultadoLabel.Parent = mainFrame
+
+local corResultado = Instance.new("UICorner")
+corResultado.CornerRadius = UDim.new(0, 8)
+corResultado.Parent = resultadoLabel
+
+local paddingResultado = Instance.new("UIPadding")
+paddingResultado.PaddingLeft = UDim.new(0, 6)
+paddingResultado.PaddingRight = UDim.new(0, 6)
+paddingResultado.PaddingTop = UDim.new(0, 4)
+paddingResultado.Parent = resultadoLabel
+
+-- Ajusta a altura do frame principal para caber o resultado
+mainFrame.Size = UDim2.new(0, 320, 0, 258)
+
+-- ===========================================================
+-- FUNÇÃO GENÉRICA DE ARRASTAR (funciona com mouse e toque/mobile)
+-- ===========================================================
+local function tornarArrastavel(alvo, pegador)
+    pegador = pegador or alvo
+
+    local arrastando = false
+    local inicioArraste = nil
+    local posicaoInicial = nil
+
+    pegador.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            arrastando = true
+            inicioArraste = input.Position
+            posicaoInicial = alvo.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    arrastando = false
+                end
+            end)
+        end
+    end)
+
+    pegador.InputChanged:Connect(function(input)
+        if arrastando and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - inicioArraste
+            alvo.Position = UDim2.new(
+                posicaoInicial.X.Scale, posicaoInicial.X.Offset + delta.X,
+                posicaoInicial.Y.Scale, posicaoInicial.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+tornarArrastavel(botaoFlutuante) -- botão flutuante se arrasta pelo próprio corpo
+tornarArrastavel(mainFrame, barraTitulo) -- menu se arrasta pela barra de título
+
+-- ===========================================================
+-- ABRIR / FECHAR O MENU
+-- ===========================================================
+local menuAberto = false
+
+local function alternarMenu()
+    menuAberto = not menuAberto
+    mainFrame.Visible = menuAberto
+
+    if menuAberto then
+        mainFrame.Size = UDim2.new(0, 300, 0, 240)
+        TweenService:Create(mainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+            Size = UDim2.new(0, 320, 0, 258)
+        }):Play()
+    end
+end
+
+botaoFlutuante.MouseButton1Click:Connect(alternarMenu)
+botaoFechar.MouseButton1Click:Connect(function()
+    menuAberto = false
+    mainFrame.Visible = false
+end)
+
+-- ===========================================================
+-- FUNÇÃO DE REQUISIÇÃO HTTP (compatível com vários executores)
+-- -----------------------------------------------------------
+-- LocalScripts padrão do Roblox não conseguem acessar domínios
+-- externos via HttpService (apenas o jogo consegue, se o dono
+-- tiver ativado "Allow HTTP Requests"). Por isso, priorizamos as
+-- funções de requisição oferecidas pelos executores (que
+-- ignoram essa restrição), com fallback para HttpService.
+-- ===========================================================
+local function requisitarHttp(opcoes)
+    local funcaoRequest = (syn and syn.request)
+        or (http and http.request)
+        or http_request
+        or request
+        or fluxus and fluxus.request
+
+    if funcaoRequest then
+        local sucesso, resposta = pcall(funcaoRequest, opcoes)
+        if sucesso then
+            return true, resposta
+        else
+            return false, resposta
+        end
+    end
+
+    -- Fallback: HttpService padrão (só funciona se o jogo permitir
+    -- requisições HTTP e o script rodar em contexto com permissão)
+    local sucesso, resposta = pcall(function()
+        return HttpService:RequestAsync({
+            Url = opcoes.Url,
+            Method = opcoes.Method,
+            Headers = opcoes.Headers,
+            Body = opcoes.Body,
+        })
+    end)
+
+    if sucesso then
+        return true, resposta
+    else
+        return false, resposta
+    end
+end
+
+-- ===========================================================
+-- FUNÇÃO QUE CHAMA A IA E CONVERTE O TEXTO
+-- ===========================================================
+local PROMPT_SISTEMA = "Converta este texto de português do Brasil para português europeu. " ..
+    "Mantenha o significado, adapte a gramática, vocabulário e expressões para Portugal. " ..
+    "Responda apenas com o texto convertido."
+
+local function converterTexto(textoOriginal)
+    -- Valida se a configuração foi preenchida
+    if Config.API_URL == "" or Config.API_KEY == "" or Config.MODEL == "" then
+        return false, "Config.lua incompleto: preencha API_URL, API_KEY e MODEL."
+    end
+
+    -- Monta o corpo da requisição no formato "Chat Completions" (OpenAI-compatível)
+    local corpoRequisicao = {
+        model = Config.MODEL,
+        messages = {
+            { role = "system", content = PROMPT_SISTEMA },
+            { role = "user", content = textoOriginal },
+        },
+    }
+
+    local corpoJson
+    local okEncode, erroEncode = pcall(function()
+        corpoJson = HttpService:JSONEncode(corpoRequisicao)
+    end)
+
+    if not okEncode then
+        return false, "Falha ao montar a requisição (JSONEncode): " .. tostring(erroEncode)
+    end
+
+    local sucesso, resposta = requisitarHttp({
+        Url = Config.API_URL,
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["Authorization"] = "Bearer " .. Config.API_KEY,
+        },
+        Body = corpoJson,
+    })
+
+    if not sucesso then
+        return false, "Falha na requisição HTTP: " .. tostring(resposta)
+    end
+
+    -- Normaliza o corpo da resposta (varia conforme a função usada)
+    local corpoResposta = resposta.Body or resposta.body
+
+    if not corpoResposta then
+        return false, "Resposta da API veio vazia ou em formato inesperado."
+    end
+
+    local okDecode, dadosDecodificados = pcall(function()
+        return HttpService:JSONDecode(corpoResposta)
+    end)
+
+    if not okDecode then
+        return false, "Falha ao interpretar a resposta da API (JSON inválido)."
+    end
+
+    -- Extrai o texto da resposta (formato padrão OpenAI-compatível)
+    local textoConvertido = dadosDecodificados
+        and dadosDecodificados.choices
+        and dadosDecodificados.choices[1]
+        and dadosDecodificados.choices[1].message
+        and dadosDecodificados.choices[1].message.content
+
+    if not textoConvertido or textoConvertido == "" then
+        -- Tenta ler uma possível mensagem de erro retornada pela API
+        local mensagemErro = dadosDecodificados and dadosDecodificados.error
+            and dadosDecodificados.error.message
+
+        return false, mensagemErro or "A API não retornou um texto convertido válido."
+    end
+
+    return true, textoConvertido
+end
+
+-- ===========================================================
+-- ENVIAR MENSAGEM NO CHAT DO ROBLOX
+-- ===========================================================
+local function enviarNoChat(mensagem)
+    local sucesso, erro = pcall(function()
+        local textChannel = TextChatService.TextChannels and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+
+        if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService and textChannel then
+            -- Sistema de chat novo (TextChatService)
+            textChannel:SendAsync(mensagem)
+        else
+            -- Sistema de chat legado
+            local ChatEventoRemoto = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+            if ChatEventoRemoto then
+                local sayMessageRequest = ChatEventoRemoto:FindFirstChild("SayMessageRequest")
+                if sayMessageRequest then
+                    sayMessageRequest:FireServer(mensagem, "All")
+                end
+            end
+        end
+    end)
+
+    return sucesso, erro
+end
+
+-- ===========================================================
+-- LÓGICA DO BOTÃO "CONVERTER E ENVIAR" (com cooldown)
+-- ===========================================================
+local processando = false
+
+local function atualizarStatus(texto, cor)
+    statusLabel.Text = texto
+    statusLabel.TextColor3 = cor or COR_TEXTO
+end
+
+botaoConverter.MouseButton1Click:Connect(function()
+    if processando then
+        return
+    end
+
+    local agora = os.clock()
+    local tempoRestante = COOLDOWN_SEGUNDOS - (agora - ultimoEnvio)
+
+    if tempoRestante > 0 then
+        atualizarStatus(string.format("Aguarde %.1fs para enviar novamente.", tempoRestante), COR_ERRO)
+        return
+    end
+
+    local textoOriginal = textBoxEntrada.Text
+
+    if not textoOriginal or textoOriginal:gsub("%s", "") == "" then
+        atualizarStatus("Digite uma frase antes de converter.", COR_ERRO)
+        return
+    end
+
+    processando = true
+    ultimoEnvio = agora
+    resultadoLabel.Text = ""
+    atualizarStatus("Convertendo...", COR_DOURADO)
+    botaoConverter.Text = "Convertendo..."
+
+    -- Executa em uma thread separada para não travar a interface
+    task.spawn(function()
+        local sucesso, resultado = converterTexto(textoOriginal)
+
+        if sucesso then
+            resultadoLabel.Text = resultado
+            atualizarStatus("Convertido com sucesso! Enviando no chat...", COR_SUCESSO)
+
+            local sucessoChat, erroChat = enviarNoChat(resultado)
+
+            if sucessoChat then
+                atualizarStatus("Mensagem enviada no chat!", COR_SUCESSO)
+            else
+                atualizarStatus("Convertido, mas falhou ao enviar no chat: " .. tostring(erroChat), COR_ERRO)
+            end
+        else
+            atualizarStatus("Erro: " .. tostring(resultado), COR_ERRO)
+        end
+
+        botaoConverter.Text = "Converter e Enviar"
+        processando = false
+    end)
+end)
+
+-- ===========================================================
+-- FIM DO SCRIPT
+-- ===========================================================
+print("[ConversorPT] Interface carregada com sucesso.")
