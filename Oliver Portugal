@@ -1,16 +1,16 @@
 -- ====================================================================
--- TRADUTOR PT-BR -> PT-PT PARA ROBLOX (TEMA PRETO E DOURADO)
--- Código Único (Configuração + Interface + Lógica)
+-- TRADUTOR PT-BR -> PT-PT PARA ROBLOX (VERSÃO GEMINI)
 -- ====================================================================
 
--- 1. CONFIGURAÇÕES DA API (Altere aqui para a IA desejada)
+-- 1. CONFIGURAÇÕES DA API GEMINI
 local Config = {
-    API_URL = "https://api.openai.com/v1/chat/completions", -- Endpoint da API
-    API_KEY = "AQ.Ab8RN6IT4awScx1oamv3x8ms-vPCQEoEFDbnhNq0kcTY2G8rcQ",                           -- Sua chave de API
-    MODEL   = "gpt-4o-mini",                                -- Modelo (ex: gpt-4o-mini, gemini-1.5-flash, grok-beta)
+    -- Endpoint compatível com OpenAI fornecido pelo Google:
+    API_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    API_KEY = "AQ.Ab8RN6K_HYmxGowoP5PQLdHdyA598S84t2OorMspFCYZmbNUuQ", -- Coloque sua chave de graça do Google AI Studio aqui
+    MODEL   = "gemini-1.5-flash",     -- Modelo rápido e gratuito do Gemini
     
     SYSTEM_PROMPT = "Converta este texto de português do Brasil para português europeu. Mantenha o significado, adapte a gramática, vocabulário e expressões para Portugal. Responda apenas com o texto convertido.",
-    COOLDOWN_TIME = 3 -- Tempo de espera entre os envios (segundos)
+    COOLDOWN_TIME = 3
 }
 
 -- 2. SERVIÇOS DO ROBLOX
@@ -22,7 +22,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LocalPlayer = Players.LocalPlayer
 local lastRequestTime = 0
-local isMenuOpen = true
+local isMenuOpen = false
 
 -- ====================================================================
 -- SISTEMA DE ENVIO PARA O CHAT
@@ -45,7 +45,7 @@ local function EnviarNoChat(mensagem)
 end
 
 -- ====================================================================
--- REQUISIÇÃO HTTP (IA)
+-- REQUISIÇÃO HTTP (GEMINI)
 -- ====================================================================
 local function FazerRequisicaoIA(textoOriginal)
     local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
@@ -81,37 +81,16 @@ local function FazerRequisicaoIA(textoOriginal)
         end
     end
 
-    return false, "Erro na API: " .. tostring(response and response.StatusCode or "Sem resposta")
+    return false, "Erro na API Gemini (Status: " .. tostring(response and response.StatusCode or "Sem resposta") .. ")"
 end
 
 -- ====================================================================
--- CRIAÇÃO DA INTERFACE GRÁFICA (UI PRETA E DOURADA)
+-- CRIAÇÃO DA INTERFACE GRÁFICA (PRETA E DOURADA)
 -- ====================================================================
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "TradutorPTPT_Gui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-
--- BOTÃO FLUTUANTE DE ABRIR/FECHAR
-local ToggleButton = Instance.new("TextButton")
-ToggleButton.Name = "ToggleButton"
-ToggleButton.Size = UDim2.new(0, 50, 0, 50)
-ToggleButton.Position = UDim2.new(0.05, 0, 0.2, 0)
-ToggleButton.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-ToggleButton.TextColor3 = Color3.fromRGB(212, 175, 55)
-ToggleButton.Text = "PT"
-ToggleButton.TextSize = 18
-ToggleButton.Font = Enum.Font.GothamBold
-ToggleButton.Parent = ScreenGui
-
-local ToggleCorner = Instance.new("UICorner")
-ToggleCorner.CornerRadius = UDim.new(0, 25)
-ToggleCorner.Parent = ToggleButton
-
-local ToggleStroke = Instance.new("UIStroke")
-ToggleStroke.Color = Color3.fromRGB(212, 175, 55)
-ToggleStroke.Thickness = 2
-ToggleStroke.Parent = ToggleButton
 
 -- PAINEL PRINCIPAL
 local MainFrame = Instance.new("Frame")
@@ -119,6 +98,7 @@ MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, 320, 0, 260)
 MainFrame.Position = UDim2.new(0.5, -160, 0.5, -130)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+MainFrame.Visible = false
 MainFrame.ClipsDescendants = true
 MainFrame.Parent = ScreenGui
 
@@ -131,13 +111,13 @@ FrameStroke.Color = Color3.fromRGB(212, 175, 55)
 FrameStroke.Thickness = 2
 FrameStroke.Parent = MainFrame
 
--- TÍTULO
+-- TÍTULO DO PAINEL
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, 0, 0, 40)
 TitleLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-TitleLabel.Text = "Tradutor PT-BR ➔ PT-PT"
+TitleLabel.Text = "Tradutor PT-BR ➔ PT-PT (Gemini)"
 TitleLabel.TextColor3 = Color3.fromRGB(212, 175, 55)
-TitleLabel.TextSize = 16
+TitleLabel.TextSize = 15
 TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.Parent = MainFrame
 
@@ -171,7 +151,7 @@ InputPadding.PaddingRight = UDim.new(0, 8)
 InputPadding.PaddingBottom = UDim.new(0, 8)
 InputPadding.Parent = InputBox
 
--- STATUS
+-- STATUS / RESULTADO
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(0.9, 0, 0, 40)
 StatusLabel.Position = UDim2.new(0.05, 0, 0.52, 0)
@@ -198,16 +178,39 @@ local SendCorner = Instance.new("UICorner")
 SendCorner.CornerRadius = UDim.new(0, 8)
 SendCorner.Parent = SendButton
 
+-- BOTÃO FLUTUANTE
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Name = "ToggleButton"
+ToggleButton.Size = UDim2.new(0, 50, 0, 50)
+ToggleButton.Position = UDim2.new(0.05, 0, 0.2, 0)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+ToggleButton.TextColor3 = Color3.fromRGB(212, 175, 55)
+ToggleButton.Text = "PT"
+ToggleButton.TextSize = 18
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.Parent = ScreenGui
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 25)
+ToggleCorner.Parent = ToggleButton
+
+local ToggleStroke = Instance.new("UIStroke")
+ToggleStroke.Color = Color3.fromRGB(212, 175, 55)
+ToggleStroke.Thickness = 2
+ToggleStroke.Parent = ToggleButton
+
 -- ====================================================================
--- SISTEMA DE ARRASTE (PC E MOBILE/TOUCH)
+-- SISTEMA DE ARRASTE
 -- ====================================================================
 local function TornarArrastavel(guiObject)
     local dragging = false
     local dragInput, dragStart, startPos
+    local hasMoved = false
 
     guiObject.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
+            hasMoved = false
             dragStart = input.Position
             startPos = guiObject.Position
 
@@ -228,6 +231,9 @@ local function TornarArrastavel(guiObject)
     UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             local delta = input.Position - dragStart
+            if math.abs(delta.X) > 5 or math.abs(delta.Y) > 5 then
+                hasMoved = true
+            end
             guiObject.Position = UDim2.new(
                 startPos.X.Scale,
                 startPos.X.Offset + delta.X,
@@ -236,17 +242,23 @@ local function TornarArrastavel(guiObject)
             )
         end
     end)
+    
+    return function()
+        return hasMoved
+    end
 end
 
 TornarArrastavel(MainFrame)
-TornarArrastavel(ToggleButton)
+local checarSeMoveu = TornarArrastavel(ToggleButton)
 
 -- ====================================================================
--- AÇÕES E EVENTOS
+-- AÇÕES
 -- ====================================================================
 ToggleButton.MouseButton1Click:Connect(function()
-    isMenuOpen = not isMenuOpen
-    MainFrame.Visible = isMenuOpen
+    if not checarSeMoveu() then
+        isMenuOpen = not isMenuOpen
+        MainFrame.Visible = isMenuOpen
+    end
 end)
 
 SendButton.MouseButton1Click:Connect(function()
@@ -267,14 +279,14 @@ SendButton.MouseButton1Click:Connect(function()
 
     lastRequestTime = tempoAtual
     SendButton.Text = "Convertendo..."
-    StatusLabel.Text = "🔄 Comunicando com a IA..."
+    StatusLabel.Text = "🔄 Comunicando com o Gemini..."
     StatusLabel.TextColor3 = Color3.fromRGB(212, 175, 55)
 
     task.spawn(function()
         local sucesso, resultado = FazerRequisicaoIA(texto)
 
         if sucesso then
-            StatusLabel.Text = "✅ Traduzido: " .. resultado
+            StatusLabel.Text = "✅ Traduzido com sucesso!"
             StatusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
             
             EnviarNoChat(resultado)
